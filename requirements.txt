@@ -1,0 +1,28 @@
+# Core Framework
+crewai==1.7.2
+
+# Search & API Integration
+tavily-python==0.7.17
+requests==2.32.5
+requests-oauthlib==2.0.0
+requests-toolbelt==1.0.0
+
+# LLM Providers
+openai==1.83.0
+# anthropic  # Optional: uncomment and install for Claude support
+
+# Memory & Cache
+redis==7.1.0
+
+# Text Processing
+rapidfuzz>=3.0.0  # Fuzzy matching for verification
+spacy==3.8.11
+spacy-legacy==3.0.12
+spacy-loggers==1.0.5
+
+# Testing
+pytest==9.0.2
+fakeredis==2.33.0
+
+# Note: Install spaCy English model separately:
+# python -m spacy download en_core_web_sm
