@@ -191,14 +191,27 @@ class TechnicalContentWriter:
 
 # --- Helper utility for sequential orchestration (example usage) ---
 
-def run_sequential_team(topic: str, output_path: str = "research_report.md", use_mock: bool = True) -> Tuple[str, List[VerifiedFact]]:
+def run_sequential_team(topic: str, output_path: str = "research_report.md", use_mock: bool = True, search_tool: Optional[SearchTool] = None) -> Tuple[str, List[VerifiedFact]]:
     """Run the two-agent team sequentially and write the report.
+
+    - If `search_tool` is provided it will be used directly.
+    - If `use_mock` is True a `MockTavilyClient` will be used.
+    - Otherwise the function will attempt to construct a `TavilyClient` from env vars.
 
     Returns the markdown string and the list of verified facts.
     """
-    search_tool = MockTavilyClient() if use_mock else None
     if search_tool is None:
-        raise ValueError("Please provide a real Tavily client when use_mock=False")
+        if use_mock:
+            search_tool = MockTavilyClient()
+        else:
+            # lazy import to avoid hard dependency when using mock
+            try:
+                from tavily_adapter import TavilyClient
+            except Exception as e:
+                raise ValueError("TavilyClient not available; ensure tavily_adapter.py exists and dependencies are installed") from e
+
+            # construct from env vars (TAVILY_API_KEY required)
+            search_tool = TavilyClient()
 
     analyst = SeniorResearchAnalyst(search_tool=search_tool)
     writer = TechnicalContentWriter(output_path=output_path)
