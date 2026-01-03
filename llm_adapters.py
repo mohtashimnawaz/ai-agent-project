@@ -83,7 +83,8 @@ class ClaudeAdapter:
 # Factory helper
 
 def make_llm(provider: Optional[str] = None) -> LLMAdapter:
-    provider = provider or os.environ.get("LLM_PROVIDER") or "mock"
+    # Default to GPT-4o for best general-purpose reasoning unless overridden
+    provider = provider or os.environ.get("LLM_PROVIDER") or "gpt4o"
     provider = provider.lower()
     if provider == "gpt4o":
         return GPT4oAdapter()

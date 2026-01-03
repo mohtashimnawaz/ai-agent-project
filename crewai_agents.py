@@ -113,7 +113,7 @@ class SeniorResearchAnalyst:
         s2 = s2.strip()
         return s2
 
-    def verify_facts(self, sources: List[Source], min_support: int = 2) -> List[VerifiedFact]:
+    def verify_facts(self, sources: List[Source], min_support: int = 2, fuzzy_threshold: int = 80) -> List[VerifiedFact]:
         # extract candidate sentences from each source
         claim_map: Dict[str, List[Source]] = {}
         for src in sources:
@@ -128,11 +128,55 @@ class SeniorResearchAnalyst:
                 if not any(existing.url == src.url for existing in claim_map[norm]):
                     claim_map[norm].append(src)
 
-        # collect claims with enough supporting sources
+        # Merge similar claims using fuzzy matching to allow minor variations
+        claims = list(claim_map.keys())
+        clusters: List[Dict] = []  # list of {rep: claim, members: [claim], sources: set()}
+
+        try:
+            from rapidfuzz import fuzz
+            _have_fuzzy = True
+        except Exception:
+            fuzz = None
+            _have_fuzzy = False
+
+        for c in claims:
+            placed = False
+            for cl in clusters:
+                rep = cl["rep"]
+                sim = 0
+                if _have_fuzzy:
+                    sim = fuzz.token_sort_ratio(c, rep)
+                else:
+                    # fallback to substring match
+                    sim = 100 if (c in rep or rep in c) else 0
+                if sim >= fuzzy_threshold:
+                    cl["members"].append(c)
+                    for src in claim_map[c]:
+                        cl["sources"].add(src.url)
+                    placed = True
+                    break
+            if not placed:
+                cl = {"rep": c, "members": [c], "sources": set([s.url for s in claim_map[c]])}
+                clusters.append(cl)
+
+        # collect claims with enough supporting sources (after merging)
         verified: List[VerifiedFact] = []
-        for claim, srcs in claim_map.items():
-            if len(srcs) >= min_support:
-                verified.append(VerifiedFact(claim=claim, supporting_sources=srcs))
+        for cl in clusters:
+            src_urls = cl["sources"]
+            # gather Source objects from original map for these URLs
+            supporting_srcs: List[Source] = []
+            seen = set()
+            for member in cl["members"]:
+                for s in claim_map[member]:
+                    if s.url in seen:
+                        continue
+                    supporting_srcs.append(s)
+                    seen.add(s.url)
+
+            if len(supporting_srcs) >= min_support:
+                # pick representative claim text as the longest member (heuristic)
+                rep_claim = max(cl["members"], key=lambda x: len(x))
+                verified.append(VerifiedFact(claim=rep_claim, supporting_sources=supporting_srcs))
 
         # sort by number of supporting sources desc
         verified.sort(key=lambda vf: len(vf.supporting_sources), reverse=True)
