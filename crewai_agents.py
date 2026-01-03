@@ -164,8 +164,7 @@ class SeniorResearchAnalyst:
         # collect claims with enough supporting sources (after merging)
         verified: List[VerifiedFact] = []
 
-        # Use module-level extract_entities helper which is easier to test and override
-        from crewai_agents import extract_entities  # type: ignore[import-not-found]
+        # extract_entities is imported at module top from crewai_agents_helpers
 
         for cl in clusters:
             src_urls = cl["sources"]
