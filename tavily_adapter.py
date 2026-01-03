@@ -29,6 +29,12 @@ except Exception:
     tavily = None  # type: ignore
     _HAS_SDK = False
 
+# Import requests at module level so tests can monkeypatch `tavily_adapter.requests` directly
+try:
+    import requests
+except Exception:
+    requests = None
+
 
 class TavilyError(Exception):
     pass
@@ -62,7 +68,9 @@ class TavilyClient(SearchTool):
 
         # HTTP session with retries/backoff
         try:
-            import requests
+            # use module-level `requests` when available
+            if requests is None:
+                raise RuntimeError("requests package not available")
             from requests.adapters import HTTPAdapter
             from urllib3.util import Retry
 
@@ -140,13 +148,34 @@ class TavilyClient(SearchTool):
         params = {"q": topic, "limit": limit}
 
         try:
-            if self._session is not None:
+            # Prefer module-level requests.get so tests can monkeypatch it; fall back to session if absent
+            if requests is not None:
+                # Use simple retry loop calling module-level requests.get so tests can control behavior
+                import time
+                last_exc = None
+                attempts = max(1, self.max_retries + 1)
+                for attempt in range(attempts):
+                    try:
+                        r = requests.get(url, headers=headers, params=params, timeout=self.timeout)
+                        # If we got a response object, break
+                        break
+                    except Exception as e:
+                        last_exc = e
+                        # backoff (only sleep if backoff_factor > 0)
+                        if self.backoff_factor and attempt < attempts - 1:
+                            time.sleep(self.backoff_factor * (2 ** attempt))
+                        continue
+                else:
+                    # all attempts exhausted
+                    raise TavilyError(f"HTTP search failed after retries: {last_exc}")
+            elif self._session is not None:
                 r = self._session.get(url, headers=headers, params=params, timeout=self.timeout)
             else:
-                r = requests.get(url, headers=headers, params=params, timeout=self.timeout)
+                raise TavilyError("requests package required for HTTP fallback")
+
             # If status code indicates error, try to provide helpful message
-            if r.status_code >= 400:
-                raise TavilyError(f"Tavily HTTP error: {r.status_code} - {r.text}")
+            if getattr(r, "status_code", 200) >= 400:
+                raise TavilyError(f"Tavily HTTP error: {getattr(r, 'status_code', 'unknown')} - {getattr(r, 'text', '')}")
             data = r.json()
         except TavilyError:
             raise

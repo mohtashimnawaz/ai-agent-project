@@ -70,6 +70,13 @@ class InMemoryMemory:
         return list(self._store.get(key) or [])
 
 
+# Attempt to import redis at module level so tests can monkeypatch `agents_core.redis`
+try:
+    import redis
+except Exception:
+    redis = None
+
+
 class RedisMemory:
     """Redis-based memory implementation. Requires `redis` package.
 
@@ -81,10 +88,8 @@ class RedisMemory:
 
     def __init__(self, redis_url: Optional[str] = None):
         redis_url = redis_url or os.environ.get("REDIS_URL") or "redis://localhost:6379/0"
-        try:
-            import redis
-        except Exception as e:  # pragma: no cover - platform deps
-            raise RuntimeError("`redis` package required for RedisMemory") from e
+        if redis is None:  # pragma: no cover - platform deps
+            raise RuntimeError("`redis` package required for RedisMemory")
 
         self._client = redis.from_url(redis_url, decode_responses=True)
 
