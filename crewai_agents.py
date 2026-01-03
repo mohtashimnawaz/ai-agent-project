@@ -216,6 +216,20 @@ def run_sequential_team(topic: str, output_path: str = "research_report.md", use
     analyst = SeniorResearchAnalyst(search_tool=search_tool)
     writer = TechnicalContentWriter(output_path=output_path)
 
+    # Optionally wire memory and LLM via tools for a future Agent-based flow
+    try:
+        from llm_adapters import make_llm
+        from agents_core import make_memory
+        llm = make_llm()
+        memory = make_memory()
+        # register tools for future agent flows (keeps backwards compatibility)
+        tools = ToolRegistry()
+        tools.register("search", search_tool)
+        tools.register("llm", type("LLMTool", (), {"run": lambda self, prompt, **kwargs: llm.generate(prompt, **kwargs)})())
+    except Exception:
+        tools = None
+        memory = None
+
     verified_facts = analyst.run(topic)
     md = writer.synthesize(topic, verified_facts)
     writer.save(md)
