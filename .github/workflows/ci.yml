@@ -28,6 +28,33 @@ PY)
         env:
           # Optionally set REDIS_URL in repository secrets to test against a real Redis instance
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          TAVILY_REDIS_CACHE_URL: ${{ secrets.TAVILY_REDIS_CACHE_URL }}
         run: pytest -q
       - name: Lint
         run: pip install ruff && ruff check .
+
+  integration:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.TAVILY_API_KEY && secrets.TAVILY_REDIS_CACHE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.12
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r <(python - <<'PY'
+import tomllib
+p = tomllib.loads(open('pyproject.toml','rb').read())
+print('\n'.join(p.get('project',{}).get('dependencies',[])))
+PY)
+          pip install pytest spacy redis
+          python -m spacy download en_core_web_sm
+      - name: Run integration tests
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          TAVILY_REDIS_CACHE_URL: ${{ secrets.TAVILY_REDIS_CACHE_URL }}
+        run: pytest -q -m integration
