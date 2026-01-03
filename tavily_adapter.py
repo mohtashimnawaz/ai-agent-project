@@ -120,6 +120,12 @@ class TavilyClient(SearchTool):
 
         # Simple in-memory cache: {cache_key: (timestamp, results)}
         self._cache: dict = {}
+        # Simple cache metrics
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def get_cache_metrics(self):
+        return {"hits": self._cache_hits, "misses": self._cache_misses}
 
     def _cache_key(self, topic: str, limit: int) -> str:
         return f"tavily:{topic}:{limit}"
@@ -130,6 +136,7 @@ class TavilyClient(SearchTool):
             try:
                 v = self._redis_cache.get(key)
                 if v is None:
+                    self._cache_misses += 1
                     return None
                 import json
 
@@ -141,12 +148,15 @@ class TavilyClient(SearchTool):
                         out.append(Source(**item))
                     else:
                         out.append(item)
+                self._cache_hits += 1
                 return out
             except Exception as e:
                 logger.warning("Redis cache get failed, falling back to local cache: %s", e)
+                self._cache_misses += 1
 
         entry = self._cache.get(key)
         if not entry:
+            self._cache_misses += 1
             return None
         ts, value = entry
         import time
@@ -154,7 +164,9 @@ class TavilyClient(SearchTool):
         if (time.time() - ts) > self.cache_ttl:
             # expired
             del self._cache[key]
+            self._cache_misses += 1
             return None
+        self._cache_hits += 1
         return value
 
     def _set_cache(self, key: str, value):
