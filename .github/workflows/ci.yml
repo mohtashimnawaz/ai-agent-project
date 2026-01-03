@@ -23,7 +23,11 @@ import tomllib
 p = tomllib.loads(open('pyproject.toml','rb').read())
 print('\n'.join(p.get('project',{}).get('dependencies',[])))
 PY)
+          pip install pytest rapidfuzz fakeredis
       - name: Run tests
+        env:
+          # Optionally set REDIS_URL in repository secrets to test against a real Redis instance
+          REDIS_URL: ${{ secrets.REDIS_URL }}
         run: pytest -q
       - name: Lint
         run: pip install ruff && ruff check .
