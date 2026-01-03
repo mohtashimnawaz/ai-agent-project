@@ -26,7 +26,25 @@ def main():
         from agents_core import make_memory
         memory = make_memory(backend=args.memory)
 
-        md, facts = run_sequential_team(topic=args.topic, output_path=args.output, use_mock=args.use_mock)
+        if args.agent == "personal_researcher":
+            # run the agent flow
+            from tavily_adapter import TavilyClient
+            from personal_researcher import PersonalResearcher
+            from llm_adapters import make_llm
+
+            if args.use_mock:
+                from crewai_agents import MockTavilyClient
+                search_tool = MockTavilyClient()
+            else:
+                search_tool = TavilyClient()
+
+            llm = make_llm(provider=args.llm) if args.llm else make_llm()
+            agent = PersonalResearcher(search_tool=search_tool, llm=llm, output_path=args.output)
+            md = agent.run(args.topic)
+            facts = []
+            print(f"PersonalResearcher completed. Report saved to {args.output}")
+        else:
+            md, facts = run_sequential_team(topic=args.topic, output_path=args.output, use_mock=args.use_mock)
 
         print(f"Completed. Verified facts: {len(facts)}. Report saved to {args.output}")
     except Exception as e:
