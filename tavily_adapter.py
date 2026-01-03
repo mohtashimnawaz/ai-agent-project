@@ -35,22 +35,50 @@ try:
 except Exception:
     requests = None
 
+# Import redis at module level so tests can monkeypatch `tavily_adapter.redis` directly
+try:
+    import redis
+except Exception:
+    redis = None
+
 
 class TavilyError(Exception):
     pass
 
 
 class TavilyClient(SearchTool):
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, timeout: int = 10, cache_ttl: int = 300, max_retries: int = 3, backoff_factor: float = 0.5):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout: int = 10,
+        cache_ttl: int = 300,
+        max_retries: int = 3,
+        backoff_factor: float = 0.5,
+        redis_cache_url: Optional[str] = None,
+    ):
         self.api_key = api_key or os.environ.get("TAVILY_API_KEY")
         self.base_url = base_url or os.environ.get("TAVILY_API_BASE") or "https://api.tavily.ai"
         self.timeout = timeout
         self.cache_ttl = int(os.environ.get("TAVILY_CACHE_TTL", str(cache_ttl)))
         self.max_retries = int(os.environ.get("TAVILY_MAX_RETRIES", str(max_retries)))
         self.backoff_factor = float(os.environ.get("TAVILY_BACKOFF_FACTOR", str(backoff_factor)))
+        # Redis cache URL may be passed explicitly or via env
+        self.redis_cache_url = redis_cache_url or os.environ.get("TAVILY_REDIS_CACHE_URL")
 
         if not self.api_key:
             raise TavilyError("TAVILY_API_KEY not set. Set env var or pass api_key to TavilyClient.")
+
+        # If redis cache URL provided, try to instantiate a redis client for shared caching
+        self._redis_cache = None
+        if self.redis_cache_url:
+            if redis is None:
+                logger.warning("redis package not available; redis cache disabled")
+            else:
+                try:
+                    self._redis_cache = redis.from_url(self.redis_cache_url, decode_responses=True)
+                except Exception as e:
+                    logger.warning("Failed to connect to redis cache, disabling redis cache: %s", e)
 
         # SDK detection
         if _HAS_SDK:
@@ -96,6 +124,18 @@ class TavilyClient(SearchTool):
         return f"tavily:{topic}:{limit}"
 
     def _get_cached(self, key: str):
+        # Try Redis shared cache first if available
+        if self._redis_cache is not None:
+            try:
+                v = self._redis_cache.get(key)
+                if v is None:
+                    return None
+                import json
+
+                return json.loads(v)
+            except Exception as e:
+                logger.warning("Redis cache get failed, falling back to local cache: %s", e)
+
         entry = self._cache.get(key)
         if not entry:
             return None
@@ -109,10 +149,19 @@ class TavilyClient(SearchTool):
         return value
 
     def _set_cache(self, key: str, value):
+        # Try Redis shared cache first if available
+        if self._redis_cache is not None:
+            try:
+                import json
+
+                self._redis_cache.setex(key, int(self.cache_ttl), json.dumps(value))
+                return
+            except Exception as e:
+                logger.warning("Redis cache set failed, falling back to local cache: %s", e)
+
         import time
 
         self._cache[key] = (time.time(), value)
-
     def search(self, topic: str, limit: int = 10) -> List[Source]:
         cache_k = self._cache_key(topic, limit)
         cached = self._get_cached(cache_k)

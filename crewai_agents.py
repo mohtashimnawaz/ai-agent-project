@@ -113,7 +113,7 @@ class SeniorResearchAnalyst:
         s2 = s2.strip()
         return s2
 
-    def verify_facts(self, sources: List[Source], min_support: int = 2, fuzzy_threshold: int = 80) -> List[VerifiedFact]:
+    def verify_facts(self, sources: List[Source], min_support: int = 2, fuzzy_threshold: int = 80, ner_required: bool = False) -> List[VerifiedFact]:
         # extract candidate sentences from each source
         claim_map: Dict[str, List[Source]] = {}
         for src in sources:
@@ -161,6 +161,28 @@ class SeniorResearchAnalyst:
 
         # collect claims with enough supporting sources (after merging)
         verified: List[VerifiedFact] = []
+
+        # Optional NER-based filter: try to extract entities and require an overlapping entity
+        try:
+            import spacy
+            try:
+                _nlp = spacy.load("en_core_web_sm")
+            except Exception:
+                # model not available; we'll fallback to basic heuristics later
+                _nlp = None
+        except Exception:
+            spacy = None
+            _nlp = None
+
+        def extract_entities(text: str):
+            if _nlp is not None:
+                doc = _nlp(text)
+                return {ent.text.lower() for ent in doc.ents}
+            # fallback: naive capitalized phrase extraction
+            import re
+
+            return set(re.findall(r"\b([A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,})*)\b", text))
+
         for cl in clusters:
             src_urls = cl["sources"]
             # gather Source objects from original map for these URLs
@@ -174,6 +196,15 @@ class SeniorResearchAnalyst:
                     seen.add(s.url)
 
             if len(supporting_srcs) >= min_support:
+                # if ner_required, ensure at least one overlapping entity across supporting sources
+                if ner_required:
+                    entity_sets = [extract_entities(s.snippet or "") for s in supporting_srcs]
+                    if not entity_sets:
+                        continue
+                    # intersect entities across sources; require at least one in common
+                    inter = set.intersection(*[es for es in entity_sets if es]) if entity_sets else set()
+                    if not inter:
+                        continue
                 # pick representative claim text as the longest member (heuristic)
                 rep_claim = max(cl["members"], key=lambda x: len(x))
                 verified.append(VerifiedFact(claim=rep_claim, supporting_sources=supporting_srcs))
