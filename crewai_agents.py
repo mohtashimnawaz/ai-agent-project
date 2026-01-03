@@ -1,0 +1,214 @@
+"""crewai_agents.py
+
+Two-agent team for research -> writing workflow.
+
+- SeniorResearchAnalyst: uses a SearchTool (Tavily-compatible) to find top sources and verifies facts across sources.
+- TechnicalContentWriter: synthesizes verified facts into a Markdown report and saves to disk.
+
+Design goals:
+- Sequential flow: analyst -> writer
+- Researcher passes *only* verified facts (cross-source verified) to writer
+- Easy to plug in a real Tavily client or use the included MockTavilyClient for testing
+"""
+from __future__ import annotations
+from dataclasses import dataclass, asdict
+from typing import List, Protocol, Optional, Dict, Tuple
+import re
+import datetime
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# --- Models ---
+
+@dataclass
+class Source:
+    title: str
+    url: str
+    snippet: str
+    published: Optional[str] = None  # ISO date or free-form
+    metadata: Optional[Dict] = None
+
+@dataclass
+class VerifiedFact:
+    claim: str
+    supporting_sources: List[Source]
+
+# --- SearchTool protocol (Tavily interface adapter) ---
+
+class SearchTool(Protocol):
+    def search(self, topic: str, limit: int = 10) -> List[Source]:
+        """Return a list of Source objects for the given topic."""
+        ...
+
+# --- Mock Tavily client for testing/demo ---
+
+class MockTavilyClient:
+    """A simple mock search client that returns synthetic sources for a topic.
+
+    Replace or subclass with a real Tavily client implementing search(topic, limit).
+    """
+
+    def search(self, topic: str, limit: int = 10) -> List[Source]:
+        sample_snippets = [
+            f"{topic} is primarily defined as an evolving area with multiple approaches.",
+            f"Recent research on {topic} highlights three main trends: efficiency, scalability, and privacy.",
+            f"Experts in {topic} recommend combining methods A and B for better results.",
+            f"A 2023 survey on {topic} found that 70% of practitioners adopt hybrid techniques.",
+            f"A study concluded that method X outperforms method Y on benchmarks for {topic}.",
+        ]
+        sources: List[Source] = []
+        for i in range(limit):
+            s = Source(
+                title=f"{topic} - Article {i+1}",
+                url=f"https://example.com/{topic.replace(' ', '_')}/{i+1}",
+                snippet=sample_snippets[i % len(sample_snippets)],
+                published=(datetime.date(2022 + (i % 3), 1, 1).isoformat()),
+                metadata={"rank": i + 1},
+            )
+            sources.append(s)
+        return sources
+
+# --- SeniorResearchAnalyst ---
+
+class SeniorResearchAnalyst:
+    """Searches for sources and verifies facts before passing to writer.
+
+    Verification approach (simple, conservative):
+    - Extract candidate claims (simple sentence extraction from snippets)
+    - Normalize claims and count occurrences across sources
+    - Keep claims that appear in at least two distinct sources (cross-source verification)
+    - Attach supporting sources
+
+    This ensures the writer consumes only verified facts.
+    """
+
+    def __init__(self, search_tool: SearchTool, search_limit: int = 20, top_k: int = 10):
+        self.search_tool = search_tool
+        self.search_limit = search_limit
+        self.top_k = top_k
+
+    def search_and_collect(self, topic: str) -> List[Source]:
+        logger.info("Searching for sources on topic: %s", topic)
+        sources = self.search_tool.search(topic, limit=self.search_limit)
+        # simple ranking: keep top_k
+        selected = sources[: self.top_k]
+        logger.info("Collected %d sources", len(selected))
+        return selected
+
+    @staticmethod
+    def _sentences_from_text(text: str) -> List[str]:
+        # naive sentence split
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        # filter tiny sentences
+        return [s.strip() for s in sentences if len(s.strip()) >= 20]
+
+    @staticmethod
+    def _normalize_claim(s: str) -> str:
+        s2 = s.lower()
+        s2 = re.sub(r"\s+", " ", s2)
+        s2 = re.sub(r"[^a-z0-9 .,]", "", s2)
+        s2 = s2.strip()
+        return s2
+
+    def verify_facts(self, sources: List[Source], min_support: int = 2) -> List[VerifiedFact]:
+        # extract candidate sentences from each source
+        claim_map: Dict[str, List[Source]] = {}
+        for src in sources:
+            text = src.snippet or ""
+            sents = self._sentences_from_text(text)
+            for s in sents:
+                norm = self._normalize_claim(s)
+                if len(norm) < 40:  # skip short, low-content
+                    continue
+                claim_map.setdefault(norm, [])
+                # add source only once per claim
+                if not any(existing.url == src.url for existing in claim_map[norm]):
+                    claim_map[norm].append(src)
+
+        # collect claims with enough supporting sources
+        verified: List[VerifiedFact] = []
+        for claim, srcs in claim_map.items():
+            if len(srcs) >= min_support:
+                verified.append(VerifiedFact(claim=claim, supporting_sources=srcs))
+
+        # sort by number of supporting sources desc
+        verified.sort(key=lambda vf: len(vf.supporting_sources), reverse=True)
+        logger.info("Verified %d facts", len(verified))
+        return verified
+
+    def run(self, topic: str) -> List[VerifiedFact]:
+        sources = self.search_and_collect(topic)
+        verified = self.verify_facts(sources)
+        return verified
+
+# --- TechnicalContentWriter ---
+
+class TechnicalContentWriter:
+    """Synthesize verified facts into a structured Markdown report and save it."""
+
+    def __init__(self, output_path: str = "research_report.md"):
+        self.output_path = output_path
+
+    def synthesize(self, topic: str, facts: List[VerifiedFact]) -> str:
+        header = f"# Research Report: {topic}\n"
+        meta = f"_Generated on {datetime.date.today().isoformat()}_\n\n"
+        summary = "## Executive Summary\n\n"
+        if facts:
+            summary += f"This report synthesizes {len(facts)} cross-verified facts about **{topic}**. Each fact is supported by multiple sources.\n\n"
+        else:
+            summary += "No verified facts were found for this topic with current search parameters.\n\n"
+
+        body = "## Key Verified Facts\n\n"
+        for i, vf in enumerate(facts, start=1):
+            body += f"### Fact {i}\n\n"
+            body += f"- **Claim:** {vf.claim}\n"
+            body += f"- **Supported by:**\n"
+            for src in vf.supporting_sources:
+                published = f" ({src.published})" if src.published else ""
+                body += f"  - [{src.title}]({src.url}){published}\n"
+            body += "\n"
+
+        sources_section = "## All Sources (top)\n\n"
+        # list unique sources
+        seen_urls = set()
+        for vf in facts:
+            for src in vf.supporting_sources:
+                if src.url in seen_urls:
+                    continue
+                seen_urls.add(src.url)
+                sources_section += f"- [{src.title}]({src.url}) - snippet: {src.snippet}\n"
+
+        md = header + meta + summary + body + sources_section
+        return md
+
+    def save(self, md_text: str) -> None:
+        with open(self.output_path, "w", encoding="utf-8") as f:
+            f.write(md_text)
+        logger.info("Saved report to %s", self.output_path)
+
+# --- Helper utility for sequential orchestration (example usage) ---
+
+def run_sequential_team(topic: str, output_path: str = "research_report.md", use_mock: bool = True) -> Tuple[str, List[VerifiedFact]]:
+    """Run the two-agent team sequentially and write the report.
+
+    Returns the markdown string and the list of verified facts.
+    """
+    search_tool = MockTavilyClient() if use_mock else None
+    if search_tool is None:
+        raise ValueError("Please provide a real Tavily client when use_mock=False")
+
+    analyst = SeniorResearchAnalyst(search_tool=search_tool)
+    writer = TechnicalContentWriter(output_path=output_path)
+
+    verified_facts = analyst.run(topic)
+    md = writer.synthesize(topic, verified_facts)
+    writer.save(md)
+    return md, verified_facts
+
+if __name__ == "__main__":
+    # quick demonstration
+    md, facts = run_sequential_team("Artificial Intelligence", output_path="research_report.md", use_mock=True)
+    print(f"Generated {len(facts)} verified facts. Report written to research_report.md")
