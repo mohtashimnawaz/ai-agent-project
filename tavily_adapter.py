@@ -67,7 +67,8 @@ class TavilyClient(SearchTool):
         self.redis_cache_url = redis_cache_url or os.environ.get("TAVILY_REDIS_CACHE_URL")
 
         if not self.api_key:
-            raise TavilyError("TAVILY_API_KEY not set. Set env var or pass api_key to TavilyClient.")
+            # Don't raise at construction time; allow tests and local flows to instantiate without a key.
+            logger.warning("TAVILY_API_KEY not set. Requests may fail without an API key.")
 
         # If redis cache URL provided, try to instantiate a redis client for shared caching
         self._redis_cache = None
@@ -132,7 +133,15 @@ class TavilyClient(SearchTool):
                     return None
                 import json
 
-                return json.loads(v)
+                loaded = json.loads(v)
+                # Convert back to Source objects if possible
+                out = []
+                for item in loaded:
+                    if isinstance(item, dict) and "title" in item and "url" in item:
+                        out.append(Source(**item))
+                    else:
+                        out.append(item)
+                return out
             except Exception as e:
                 logger.warning("Redis cache get failed, falling back to local cache: %s", e)
 
@@ -153,8 +162,25 @@ class TavilyClient(SearchTool):
         if self._redis_cache is not None:
             try:
                 import json
+                # Convert Source objects to serializable dicts
+                serializable = []
+                for item in value:
+                    if hasattr(item, "__dict__") or hasattr(item, "__dataclass_fields__"):
+                        # convert dataclass-like objects
+                        try:
+                            serializable.append(item.__dict__)
+                        except Exception:
+                            # fallback to asdict if dataclass
+                            from dataclasses import asdict
 
-                self._redis_cache.setex(key, int(self.cache_ttl), json.dumps(value))
+                            try:
+                                serializable.append(asdict(item))
+                            except Exception:
+                                serializable.append(str(item))
+                    else:
+                        serializable.append(item)
+
+                self._redis_cache.setex(key, int(self.cache_ttl), json.dumps(serializable))
                 return
             except Exception as e:
                 logger.warning("Redis cache set failed, falling back to local cache: %s", e)

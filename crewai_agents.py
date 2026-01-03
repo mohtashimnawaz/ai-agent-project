@@ -18,6 +18,8 @@ import datetime
 import json
 import logging
 
+from crewai_agents_helpers import extract_entities
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -162,26 +164,8 @@ class SeniorResearchAnalyst:
         # collect claims with enough supporting sources (after merging)
         verified: List[VerifiedFact] = []
 
-        # Optional NER-based filter: try to extract entities and require an overlapping entity
-        try:
-            import spacy
-            try:
-                _nlp = spacy.load("en_core_web_sm")
-            except Exception:
-                # model not available; we'll fallback to basic heuristics later
-                _nlp = None
-        except Exception:
-            spacy = None
-            _nlp = None
-
-        def extract_entities(text: str):
-            if _nlp is not None:
-                doc = _nlp(text)
-                return {ent.text.lower() for ent in doc.ents}
-            # fallback: naive capitalized phrase extraction
-            import re
-
-            return set(re.findall(r"\b([A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,})*)\b", text))
+        # Use module-level extract_entities helper which is easier to test and override
+        from crewai_agents import extract_entities  # type: ignore[import-not-found]
 
         for cl in clusters:
             src_urls = cl["sources"]
